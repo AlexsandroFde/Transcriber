@@ -1,0 +1,12 @@
+# Glossário da reunião: um termo por linha (ou vários separados por ponto e vírgula).
+# Inclua nomes de pessoas, organizações, projetos, siglas e termos técnicos citados.
+# Linhas iniciadas por # são ignoradas.
+#
+# Para usar automaticamente com o transcrever.bat, copie este arquivo como glossario.txt
+# na pasta do programa. Pela linha de comando: transcritor reuniao.mp4 -g glossario.txt
+
+Instituto Iracema
+Mariana; Roberto; Juliana; Carlos
+SIGEP
+LGPD
+API
