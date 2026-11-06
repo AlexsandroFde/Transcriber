@@ -16,6 +16,10 @@ dependencies = [
     "soundfile>=0.13",
     "numpy>=2.0",
     "scipy>=1.13",
+    "fastapi>=0.162",
+    "uvicorn>=0.54",
+    "pywebview>=6.2",
+    "python-multipart>=0.0.33",
 ]
 
 [project.scripts]
@@ -26,6 +30,7 @@ dev = [
     "pytest>=8.3",
     "edge-tts>=7.0",
     "jiwer>=3.0",
+    "httpx>=0.28",
 ]
 
 [tool.uv.sources]
