@@ -25,6 +25,10 @@ dependencies = [
 [project.scripts]
 transcritor = "transcritor.cli:main"
 
+# Inicializador do aplicativo, sem janela de console (alvo do atalho "Transcritor").
+[project.gui-scripts]
+transcritor-app = "transcritor.desktop:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
