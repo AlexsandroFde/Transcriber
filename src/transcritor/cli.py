@@ -16,9 +16,11 @@ import glob
 import logging
 import sys
 from pathlib import Path
+from typing import get_args
 
 from . import __version__
 from .ambiente import configurar_log, preparar
+from .erros import ErroTranscritor
 
 log = logging.getLogger("transcritor")
 
@@ -35,18 +37,10 @@ def _formatos(valor: str) -> list[str]:
     return itens
 
 
-def _ler_glossario(caminho: str | None) -> list[str]:
-    if not caminho:
-        return []
-    termos = []
-    for linha in Path(caminho).read_text(encoding="utf-8-sig").splitlines():
-        linha = linha.split("#", 1)[0].strip()
-        if linha:
-            termos.extend(t.strip() for t in linha.split(";") if t.strip())
-    return termos
-
-
 def _parser() -> argparse.ArgumentParser:
+    from .servicos import contratos as c
+
+    padrao = c.OpcoesTranscricao()
     p = argparse.ArgumentParser(
         prog="transcritor",
         description="Transcrição fiel de reuniões gravadas (português brasileiro), com identificação de "
@@ -63,24 +57,24 @@ def _parser() -> argparse.ArgumentParser:
     t.add_argument("--max-participantes", type=int, help="número máximo de participantes")
     t.add_argument("-c", "--contexto", help="frase descrevendo a reunião (assunto, organização, projeto)")
     t.add_argument("-g", "--glossario", help="arquivo .txt com nomes, siglas e termos técnicos (um por linha)")
-    t.add_argument("-m", "--modelo", default="large-v3", help="modelo Whisper (padrão: large-v3)")
+    t.add_argument("-m", "--modelo", default=padrao.modelo, help=f"modelo Whisper (padrão: {padrao.modelo})")
     t.add_argument("--modelo-revisao", help="modelo diferente para o segundo passo (ex.: large-v2)")
-    t.add_argument("--dispositivo", choices=["auto", "cuda", "cpu"], default="auto")
-    t.add_argument("--precisao", choices=["auto", "float16", "int8_float16", "int8", "float32", "bfloat16"],
-                   default="auto", help="tipo numérico do modelo (padrão: float16 na GPU, int8 na CPU)")
-    t.add_argument("--pre-processamento", choices=["auto", "leve", "forte", "nenhum"], default="auto",
+    t.add_argument("--dispositivo", choices=get_args(c.Dispositivo), default=padrao.dispositivo)
+    t.add_argument("--precisao", choices=get_args(c.Precisao), default=padrao.precisao,
+                   help="tipo numérico do modelo (padrão: float16 na GPU, int8 na CPU)")
+    t.add_argument("--pre-processamento", choices=get_args(c.PreProcessamento), default=padrao.pre_processamento,
                    help="tratamento do áudio (padrão: auto, que só reduz ruído quando necessário)")
-    t.add_argument("--faixa-audio", default="0", help="índice da faixa de áudio ou 'todas' para mixar")
-    t.add_argument("--diarizacao", choices=["auto", "pyannote", "livre", "sherpa", "nenhuma"], default="auto",
+    t.add_argument("--faixa-audio", default=padrao.faixa_audio, help="índice da faixa de áudio ou 'todas' para mixar")
+    t.add_argument("--diarizacao", choices=get_args(c.Diarizacao), default=padrao.diarizacao,
                    help="identificação de participantes (padrão: pyannote community-1 com token; sem token, "
                         "o pipeline pyannote 3.1 livre)")
     t.add_argument("--hf-token", help="token do Hugging Face (alternativa a configurar-token)")
     t.add_argument("--sem-revisao", action="store_true", help="pula o segundo passo de revisão (mais rápido)")
-    t.add_argument("--estilo", choices=["literal", "padrao"], default="literal",
+    t.add_argument("--estilo", choices=get_args(c.Estilo), default=padrao.estilo,
                    help="literal (padrão) preserva hesitações e repetições; padrao deixa o modelo decidir")
     t.add_argument("-f", "--formatos", type=_formatos, default=None,
                    help="formatos de saída separados por vírgula (padrão: md,txt,docx,srt,vtt,json)")
-    t.add_argument("--beam", type=int, default=5, help="largura do feixe no primeiro passo (padrão: 5)")
+    t.add_argument("--beam", type=int, default=padrao.beam, help=f"largura do feixe no primeiro passo (padrão: {padrao.beam})")
     t.add_argument("--limiar-incerteza", type=float, default=None,
                    help="sem maioria entre as decodificações, palavras abaixo desta probabilidade são marcadas "
                         "como incertas (padrão: 0.85)")
@@ -104,42 +98,48 @@ def _parser() -> argparse.ArgumentParser:
 
     v = sub.add_parser("verificar", help="verifica GPU, ffmpeg, modelos e token")
     v.add_argument("--baixar-modelos", action="store_true", help="baixa os modelos agora (evita espera depois)")
-    v.add_argument("-m", "--modelo", default="large-v3")
+    v.add_argument("-m", "--modelo", default=padrao.modelo)
 
-    c = sub.add_parser("configurar-token", help="salva o token do Hugging Face para a diarização pyannote")
-    c.add_argument("token")
+    tk = sub.add_parser("configurar-token", help="salva o token do Hugging Face para a diarização pyannote")
+    tk.add_argument("token")
     return p
 
 
-def _cmd_transcrever(a: argparse.Namespace) -> int:
-    from .processamento.exportar import FORMATOS
-    from .processamento.pipeline import Opcoes, processar
+def _opcoes_da_linha(a: argparse.Namespace):
+    from pydantic import ValidationError
 
-    op = Opcoes(
-        saida=Path(a.saida) if a.saida else None,
-        modelo=a.modelo,
-        modelo_revisao=a.modelo_revisao,
-        dispositivo=a.dispositivo,
-        precisao=a.precisao,
-        num_participantes=a.participantes,
-        min_participantes=a.min_participantes,
-        max_participantes=a.max_participantes,
-        contexto=a.contexto,
-        glossario=_ler_glossario(a.glossario),
-        preprocessamento=a.pre_processamento,
-        faixa=a.faixa_audio,
-        diarizacao=a.diarizacao,
-        hf_token=a.hf_token,
-        revisao=not a.sem_revisao,
-        literal=a.estilo == "literal",
-        formatos=a.formatos or list(FORMATOS),
-        refazer=a.refazer,
-        manter_audio=a.manter_audio,
-        beam=a.beam,
-        detalhado=a.detalhado,
-    )
-    if a.limiar_incerteza is not None:
-        op.opcoes_revisao.limiar_sem_maioria = a.limiar_incerteza
+    from .servicos.contratos import OpcoesTranscricao
+
+    valores = dict(
+        pasta_saida=a.saida, participantes=a.participantes, min_participantes=a.min_participantes,
+        max_participantes=a.max_participantes, contexto=a.contexto, glossario_arquivo=a.glossario, modelo=a.modelo,
+        modelo_revisao=a.modelo_revisao, dispositivo=a.dispositivo, precisao=a.precisao,
+        pre_processamento=a.pre_processamento, faixa_audio=a.faixa_audio, diarizacao=a.diarizacao,
+        hf_token=a.hf_token, revisao=not a.sem_revisao, estilo=a.estilo, beam=a.beam,
+        limiar_incerteza=a.limiar_incerteza, refazer=a.refazer, manter_audio=a.manter_audio, detalhado=a.detalhado)
+    if a.formatos:
+        valores["formatos"] = a.formatos
+    try:
+        return OpcoesTranscricao(**valores)
+    except ValidationError as e:
+        nomes = {"pasta_saida": "--saida", "glossario_arquivo": "--glossario", "pre_processamento": "--pre-processamento",
+                 "faixa_audio": "--faixa-audio", "limiar_incerteza": "--limiar-incerteza"}
+        for erro in e.errors():
+            campo = str(erro["loc"][0]) if erro.get("loc") else ""
+            opcao = nomes.get(campo, f"--{campo.replace('_', '-')}" if campo else "")
+            log.error("Opção inválida%s: %s", f" {opcao}" if opcao else "", erro["msg"].removeprefix("Value error, "))
+        raise SystemExit(2)
+
+
+def _cmd_transcrever(a: argparse.Namespace) -> int:
+    from .processamento.pipeline import processar
+    from .servicos import glossario
+    from .servicos.transcricoes import construir_opcoes
+
+    params = _opcoes_da_linha(a)
+    if params.glossario_arquivo:
+        glossario.ler_arquivo(params.glossario_arquivo)  # erro claro antes de começar
+    op = construir_opcoes(params)
     entradas: list[str] = []
     for e in a.entradas:
         # O cmd do Windows não expande curingas (*.mp4); expandimos aqui.
@@ -160,89 +160,43 @@ def _cmd_transcrever(a: argparse.Namespace) -> int:
     return 1 if falhas else 0
 
 
-def _ler_mapeamentos(itens: list[str], arquivo: str | None) -> list[tuple[str, str]]:
-    linhas = list(itens)
-    if arquivo:
-        linhas += [l for l in Path(arquivo).read_text(encoding="utf-8-sig").splitlines() if l.strip() and not l.startswith("#")]
-    pares = []
-    for l in linhas:
-        if "=" not in l:
-            raise SystemExit(f'Mapeamento inválido: "{l}". Use o formato "Participante 1=Nome".')
-        k, v = l.split("=", 1)
-        pares.append((k.strip(), v.strip()))
-    return pares
-
-
 def _perguntar_nomes(dados: dict) -> list[tuple[str, str]]:
     """Mostra cada participante com exemplos de fala e nomes mencionados; pergunta o nome."""
-    from collections import Counter
-
     from .processamento import tempo
-    from .processamento.modelos import Palavra
-    from .processamento.nomes import sugerir
-    from .processamento.relatorio import frases_com_tempo
+    from .servicos.participantes import resumir
 
-    palavras = [Palavra.de_dict(p) for p in dados["palavras"]]
-    frases = frases_com_tempo(palavras)
-    evidencias = sugerir(frases)
     pares = []
-
-    def numero(item):
-        try:
-            return int(item[1]["rotulo"].rsplit(" ", 1)[-1])
-        except ValueError:
-            return 0
-
     print("\nPara cada participante, digite o nome (Enter mantém como está).")
     print("Para unir dois rótulos da mesma pessoa, digite o rótulo da outra (ex.: Participante 1).")
-    for f, info in sorted(dados["falantes"].items(), key=numero):
-        fala = sum(p.fim - p.inicio for p in palavras if p.falante == f)
-        print(f"\n{info['rotulo']} ({tempo.duracao_legivel(fala)} de fala)")
-        exemplos = [(t, tx) for t, _fim, ff, tx in frases if ff == f and len(tx.split()) >= 4][:3]
-        for t, tx in exemplos:
-            print(f"   [{tempo.hms(t)}] {tx[:110]}{'...' if len(tx) > 110 else ''}")
-        sugestoes = Counter(e.nome for e in evidencias if e.falante == f).most_common(3)
-        if sugestoes:
+    for p in resumir(dados):
+        print(f"\n{p.rotulo} ({tempo.duracao_legivel(p.tempo_fala_s)} de fala)")
+        for ex in p.exemplos:
+            print(f"   [{tempo.hms(ex.inicio_s)}] {ex.texto[:110]}{'...' if len(ex.texto) > 110 else ''}")
+        if p.sugestoes:
             print("   Nomes mencionados na fala (confirme antes de usar): "
-                  + ", ".join(f"{n} ({c}x)" for n, c in sugestoes))
-        atual = info.get("nome") or info["rotulo"]
+                  + ", ".join(f"{s.nome} ({s.ocorrencias}x)" for s in p.sugestoes))
         try:
-            resposta = input(f"   Nome [{atual}]: ").strip()
+            resposta = input(f"   Nome [{p.nome or p.rotulo}]: ").strip()
         except EOFError:
             resposta = ""
         if resposta:
-            pares.append((info["rotulo"], resposta))
+            pares.append((p.rotulo, resposta))
     return pares
 
 
 def _cmd_nomear(a: argparse.Namespace) -> int:
-    from .processamento.exportar import FORMATOS
     from .processamento.documento import carregar_transcricao, gerar_saidas
+    from .processamento.exportar import FORMATOS
+    from .servicos.participantes import aplicar, ler_mapeamentos
 
     caminho = Path(a.json)
     dados = carregar_transcricao(caminho)
-    falantes = dados["falantes"]
+    pares = ler_mapeamentos(a.mapeamentos, a.arquivo)
     if a.limpar:
-        for info in falantes.values():
-            info["nome"] = None
-    por_chave = {}
-    for f, info in falantes.items():
-        por_chave[f.lower()] = f
-        por_chave[info["rotulo"].lower()] = f
-    pares = _ler_mapeamentos(a.mapeamentos, a.arquivo)
+        aplicar(dados, [], limpar=True)
     if a.interativo:
         pares += _perguntar_nomes(dados)
-    for chave, nome in pares:
-        f = por_chave.get(chave.lower())
-        if f is None:
-            disponiveis = ", ".join(i["rotulo"] for i in falantes.values())
-            raise SystemExit(f'Participante "{chave}" não encontrado. Disponíveis: {disponiveis}')
-        # Nome igual a outro rótulo une os dois (ex.: "Participante 3=Participante 1").
-        alvo = por_chave.get(nome.lower())
-        if alvo is not None and alvo != f:
-            nome = falantes[alvo]["nome"] or falantes[alvo]["rotulo"]
-        falantes[f]["nome"] = nome or None
-        log.info("%s -> %s", falantes[f]["rotulo"], nome or "(sem nome)")
+    aplicar(dados, pares)
     arquivos = gerar_saidas(dados, caminho.parent, a.formatos or list(FORMATOS))
     log.info("Arquivos atualizados:")
     for arq in arquivos:
@@ -251,8 +205,8 @@ def _cmd_nomear(a: argparse.Namespace) -> int:
 
 
 def _cmd_exportar(a: argparse.Namespace) -> int:
-    from .processamento.exportar import FORMATOS
     from .processamento.documento import carregar_transcricao, gerar_saidas
+    from .processamento.exportar import FORMATOS
 
     caminho = Path(a.json)
     dados = carregar_transcricao(caminho)
@@ -263,65 +217,30 @@ def _cmd_exportar(a: argparse.Namespace) -> int:
 
 
 def _cmd_verificar(a: argparse.Namespace) -> int:
-    from .ambiente import caminho_ffmpeg, cuda_disponivel, descrever_gpu, token_hf
+    from .processamento.diarizacao import PAGINA_MODELO
+    from .servicos.diagnostico import baixar_modelos, verificar
 
-    ok = True
-    log.info("transcritor %s | Python %s", __version__, sys.version.split()[0])
-    try:
-        log.info("ffmpeg: %s", caminho_ffmpeg())
-    except Exception as e:
-        ok = False
-        log.error("ffmpeg: não encontrado (%s)", e)
-    gpu = cuda_disponivel()
-    log.info("GPU (CUDA): %s", descrever_gpu() if gpu else "indisponível; o processamento usará a CPU (bem mais lento)")
-    token = token_hf()
-    if token:
-        log.info("Token do Hugging Face: configurado")
-        try:
-            from huggingface_hub import HfApi
-
-            from .processamento.diarizacao import MODELO_PYANNOTE, PAGINA_MODELO
-
-            try:
-                HfApi().model_info(MODELO_PYANNOTE, token=token, files_metadata=False)
-                from huggingface_hub import hf_hub_download
-
-                hf_hub_download(MODELO_PYANNOTE, "config.yaml", token=token)
-                log.info("Acesso ao modelo de diarização %s: ok", MODELO_PYANNOTE)
-            except Exception as e:
-                ok = False
-                log.error("Sem acesso a %s: %s\n  Aceite os termos em %s com a mesma conta do token.",
-                          MODELO_PYANNOTE, str(e).splitlines()[0], PAGINA_MODELO)
-        except Exception as e:
-            log.error("Não foi possível verificar o acesso ao Hugging Face: %s", e)
+    r = verificar(a.modelo)
+    log.info("transcritor %s | Python %s", r.versao, r.python)
+    if r.ffmpeg.disponivel:
+        log.info("ffmpeg: %s", r.ffmpeg.caminho)
     else:
-        from .processamento.diarizacao import PAGINA_MODELO
-
+        log.error("ffmpeg: %s", r.ffmpeg.mensagem)
+    log.info("GPU (CUDA): %s", r.gpu.descricao if r.gpu.disponivel else r.gpu.mensagem)
+    tk = r.token_hf
+    if tk.configurado:
+        log.info("Token do Hugging Face: configurado")
+        (log.info if tk.acesso_modelo == "ok" else log.error)("%s", tk.mensagem)
+    else:
         log.info("Token do Hugging Face: não configurado (opcional). A diarização usará o pipeline\n"
                  "  pyannote 3.1 com componentes de acesso livre. Para usar o modelo mais recente\n"
                  "  (community-1): crie uma conta em huggingface.co, aceite os termos em\n"
                  "  %s, gere um token de leitura e rode: transcritor configurar-token SEU_TOKEN", PAGINA_MODELO)
+    situacao = {True: "baixado", False: "não baixado", None: "não verificado"}
+    log.info("Modelos: %s", "; ".join(f"{m.nome} ({situacao[m.baixado]})" for m in r.modelos))
     if a.baixar_modelos:
-        log.info("Baixando/verificando o modelo de reconhecimento %s...", a.modelo)
-        from .processamento.asr import Reconhecedor
-
-        rec = Reconhecedor(a.modelo)
-        log.info("Modelo %s pronto (%s, %s).", a.modelo, rec.dispositivo, rec.precisao)
-        rec.liberar()
-        log.info("Baixando/verificando os modelos de diarização...")
-        from .processamento.diarizacao import modelos_livre
-
-        modelos_livre()
-        if token:
-            from .ambiente import carregar_torch
-            from .processamento.diarizacao import MODELO_PYANNOTE
-
-            carregar_torch()
-            from pyannote.audio import Pipeline
-
-            if Pipeline.from_pretrained(MODELO_PYANNOTE, token=token) is not None:
-                log.info("Modelo %s pronto.", MODELO_PYANNOTE)
-    return 0 if ok else 1
+        baixar_modelos(a.modelo)
+    return 0 if r.ffmpeg.disponivel and tk.acesso_modelo not in ("negado", "erro") else 1
 
 
 def _cmd_token(a: argparse.Namespace) -> int:
@@ -346,4 +265,11 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
     acoes = {"transcrever": _cmd_transcrever, "nomear": _cmd_nomear, "exportar": _cmd_exportar,
              "verificar": _cmd_verificar, "configurar-token": _cmd_token}
-    sys.exit(acoes[a.comando](a))
+    try:
+        codigo = acoes[a.comando](a)
+    except ErroTranscritor as e:
+        log.error("%s", e.mensagem)
+        if e.dica:
+            log.error("  %s", e.dica)
+        codigo = 1
+    sys.exit(codigo)
