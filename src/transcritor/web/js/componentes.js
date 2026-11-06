@@ -26,9 +26,9 @@ export function Campo({ rotulo, ajuda, erro, opcional, id, children, classe = ""
 
 export const descritoPor = (id, erro, ajuda) => (erro ? id + "-erro" : ajuda ? id + "-ajuda" : undefined);
 
-export function Interruptor({ marcado, aoMudar, titulo, descricao, desabilitado }) {
+export function Interruptor({ marcado, aoMudar, titulo, descricao, desabilitado, classe = "", dica }) {
   const [id] = useState(() => novoId("int"));
-  return html`<label class="interruptor" for=${id}>
+  return html`<label class=${["interruptor", classe].filter(Boolean).join(" ")} for=${id} title=${dica}>
     <span class="corpo"><span class="titulo">${titulo}</span>${descricao && html`<span class="descricao">${descricao}</span>`}</span>
     <input id=${id} type="checkbox" role="switch" checked=${marcado} disabled=${desabilitado}
       onChange=${(e) => aoMudar(e.currentTarget.checked)} />

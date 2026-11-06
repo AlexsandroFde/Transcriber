@@ -103,7 +103,7 @@ Em **Transcrições**, cada transcrição tem quatro abas:
 
 | Aba | O que faz |
 |---|---|
-| **Texto** | A transcrição com os trechos incertos destacados e busca (sem diferenciar acentos). Clique em qualquer horário para ouvir aquele ponto da gravação. |
+| **Texto** | A transcrição com os trechos incertos destacados e busca (sem diferenciar acentos). Clique em qualquer horário para ouvir aquele ponto da gravação. Com a **Rolagem automática** ligada, a tela rola até cada fala quando ela começa e o vídeo fica fixo no alto; se você rolar a página durante a reprodução, o acompanhamento pausa até você clicar em **Voltar ao trecho atual** (ou em um horário do texto). A escolha fica guardada. |
 | **Participantes** | Dá nome a cada participante. Mostra exemplos do que cada pessoa disse e os nomes mencionados na conversa (por exemplo, quando alguém diz "aqui é a Mariana"); um clique usa a sugestão. Se a mesma pessoa apareceu com dois rótulos, escolha "É a mesma pessoa que". Ao salvar, todos os arquivos são gerados de novo. O programa nunca atribui nomes sozinho. |
 | **Conferência** | Indicadores de qualidade, os pontos para ouvir de novo (trechos incertos, com as outras hipóteses ouvidas, inaudíveis e frases descartadas), as sugestões de nomes e o índice de menções a valores, datas, prazos, horários, percentuais e encaminhamentos. Tudo são citações literais. |
 | **Arquivos** | Abre os arquivos gerados (Word, textos, legendas) e gera os arquivos de novo, em outros formatos ou em outra pasta. |

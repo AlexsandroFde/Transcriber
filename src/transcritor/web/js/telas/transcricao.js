@@ -1,11 +1,11 @@
 import { api } from "../api.js";
 import { html, useEffect, useMemo, useRef, useState } from "../biblioteca.js";
-import { Aviso, Botao, Campo, Carregando, CorFalante, Etiqueta, PainelErro, Vazio, confirmar, executar, notificar,
-  pedirCaminho, useAtraso, useTitulo } from "../componentes.js";
+import { Aviso, Botao, Campo, Carregando, CorFalante, Etiqueta, Interruptor, PainelErro, Vazio, confirmar, executar,
+  notificar, pedirCaminho, useAtraso, useTitulo } from "../componentes.js";
 import { escolherPasta } from "../desktop.js";
 import { bytes, duracao, hms, inteiro, plural, quando } from "../formato.js";
 import { Icone } from "../icones.js";
-import { ir, useLoja } from "../loja.js";
+import { ir, preferencia, salvarPreferencia, useLoja } from "../loja.js";
 import { abrirExistente, recarregarTranscricoes } from "./transcricoes.js";
 
 const ABAS = [
@@ -64,13 +64,140 @@ function realcar(texto, termo, contador, ativo) {
   return partes;
 }
 
+// -- rolagem automática ---------------------------------------------------------------------------
+
+// Frações da parte da tela que o player fixo não cobre. A cada troca de fala, a página rola até a fala
+// nova ficar na ANCORA. Numa fala longa, que não cabe na tela, ela rola de novo quando o trecho que está
+// tocando passa do LIMITE.
+const ANCORA = 0.22;
+const LIMITE = 0.72;
+const TECLAS_ROLAGEM = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
+
+// Bloco que está tocando (o último que já começou) e quanto dele já passou, de 0 a 1.
+function posicaoNoTexto(blocos, t) {
+  if (t === null || !blocos || !blocos.length) return null;
+  let indice = -1;
+  for (let i = 0; i < blocos.length; i++) {
+    if (blocos[i].inicio_s <= t && (indice < 0 || blocos[i].inicio_s >= blocos[indice].inicio_s)) indice = i;
+  }
+  if (indice < 0) return { indice: 0, fracao: 0 };
+  const b = blocos[indice];
+  const total = b.fim_s - b.inicio_s;
+  return { indice, fracao: total > 0 ? Math.min(1, Math.max(0, (t - b.inicio_s) / total)) : 0 };
+}
+
+// Parte da janela em que o texto aparece: abaixo do player fixo (e da barra de navegação, em telas estreitas).
+// Só conta o que fica por cima do texto; o que não é fixo sai da tela junto com a rolagem. O que é fixo
+// estará grudado no alto depois de rolar, mesmo que agora ainda esteja no lugar original.
+function areaLivre() {
+  let topo = 0;
+  for (const seletor of [".lateral", ".reprodutor"]) {
+    const el = document.querySelector(seletor);
+    if (!el || getComputedStyle(el).position !== "sticky") continue;
+    const altura = el.getBoundingClientRect().height;
+    if (altura < window.innerHeight * 0.6) topo = Math.max(topo, altura);
+  }
+  topo = Math.min(topo, window.innerHeight * 0.6);
+  return { topo, altura: window.innerHeight - topo };
+}
+
+// Faz a página acompanhar a gravação. Rolar a página durante a reprodução (roda do mouse, teclado,
+// barra de rolagem, toque ou busca) suspende o acompanhamento, que volta pelo botão "Voltar ao trecho
+// atual" ou ao clicar num horário do texto. Com a gravação pausada, rolar não suspende nada: ao tocar
+// de novo, a página volta para a fala atual.
+function useRolagemAutomatica({ ligada, blocos, tempoAtual, tocando, lista }) {
+  const [seguindo, setSeguindo] = useState(true);
+  const propria = useRef(false); // a rolagem em andamento foi pedida por este código
+  const espera = useRef(0);
+  const forcar = useRef(false);
+  const ultimo = useRef(-1); // índice da última fala acompanhada
+  const tocandoAgora = useRef(tocando);
+  tocandoAgora.current = tocando;
+
+  // A rolagem suave dispara vários eventos "scroll"; a marca vale até 200 ms depois do último deles.
+  const prolongar = () => {
+    clearTimeout(espera.current);
+    espera.current = setTimeout(() => { propria.current = false; }, 200);
+  };
+
+  useEffect(() => {
+    if (!ligada) return;
+    ultimo.current = -1;
+    setSeguindo(true);
+  }, [ligada]);
+
+  useEffect(() => {
+    if (!ligada) return undefined;
+    let ignorarAte = 0;
+    // Qualquer ação da pessoa encerra a marca: a rolagem que vier depois é dela.
+    const daPessoa = () => { propria.current = false; };
+    const tecla = (e) => {
+      if (!TECLAS_ROLAGEM.has(e.key) || !(e.target instanceof Element)) return;
+      if (e.target.closest("input, textarea, select, video, audio, [contenteditable]")) return;
+      if (e.key === " " && e.target.closest("button, a, summary, label")) return;
+      daPessoa();
+    };
+    // Botão do meio (rolagem automática do Windows) ou clique na barra de rolagem da página.
+    const botao = (e) => { if (e.button === 1 || e.clientX >= document.documentElement.clientWidth) daPessoa(); };
+    // Mudar o tamanho da janela reorganiza o texto e o navegador corrige a rolagem sozinho.
+    const redimensionou = () => { ignorarAte = performance.now() + 400; };
+    const rolou = () => {
+      if (propria.current) { prolongar(); return; }
+      if (performance.now() >= ignorarAte && tocandoAgora.current) setSeguindo(false);
+    };
+    const parou = () => { clearTimeout(espera.current); propria.current = false; };
+    const passivo = { passive: true };
+    const ouvintes = [["wheel", daPessoa, passivo], ["touchstart", daPessoa, passivo], ["keydown", tecla],
+      ["mousedown", botao], ["resize", redimensionou], ["scroll", rolou, passivo], ["scrollend", parou]];
+    for (const [nome, f, opcoes] of ouvintes) window.addEventListener(nome, f, opcoes);
+    return () => {
+      for (const [nome, f, opcoes] of ouvintes) window.removeEventListener(nome, f, opcoes);
+      clearTimeout(espera.current);
+      propria.current = false;
+    };
+  }, [ligada]);
+
+  useEffect(() => {
+    const forcado = forcar.current;
+    forcar.current = false;
+    if (!ligada || !seguindo || !lista.current || (propria.current && !forcado)) return;
+    const pos = posicaoNoTexto(blocos, tempoAtual);
+    const el = pos && lista.current.children[pos.indice];
+    if (!el) return;
+    const trocou = pos.indice !== ultimo.current;
+    ultimo.current = pos.indice;
+    // Sem o horário de cada frase, a posição da fala dentro de um bloco longo é estimada pelo tempo.
+    const r = el.getBoundingClientRect();
+    const linha = r.top + pos.fracao * r.height;
+    const { topo, altura } = areaLivre();
+    if (!forcado && !trocou && linha >= topo + 8 && linha <= topo + altura * LIMITE) return;
+    const maximo = document.documentElement.scrollHeight - window.innerHeight;
+    const destino = Math.max(0, Math.min(maximo, window.scrollY + linha - (topo + altura * ANCORA)));
+    if (Math.abs(destino - window.scrollY) < 2) return;
+    propria.current = true;
+    prolongar();
+    const suave = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({ top: destino, behavior: suave ? "smooth" : "auto" });
+  }, [ligada, seguindo, tempoAtual, blocos]);
+
+  return {
+    seguindo,
+    seguir: () => setSeguindo(true),
+    retomar: () => { forcar.current = true; setSeguindo(true); },
+  };
+}
+
 // -- aba Texto ------------------------------------------------------------------------------------
 
-function AbaTexto({ id, versao, tocar, tempoAtual }) {
+function AbaTexto({ id, versao, tocar, tempoAtual, tocando, rolagem, aoMudarRolagem }) {
   const [conteudo, erro] = useCarregar(() => api.conteudo(id), [id, versao]);
   const [busca, setBusca] = useState("");
   const termo = useAtraso(normalizarComPosicoes(busca.trim()), 150);
   const [ativo, setAtivo] = useState(0);
+  const lista = useRef(null);
+  const ligada = rolagem && !!tocar;
+  const { seguindo, seguir, retomar } = useRolagemAutomatica({
+    ligada, blocos: conteudo ? conteudo.blocos : null, tempoAtual, tocando, lista });
 
   useEffect(() => setAtivo(0), [termo]);
   useEffect(() => {
@@ -84,12 +211,14 @@ function AbaTexto({ id, versao, tocar, tempoAtual }) {
   if (!conteudo.blocos.length) return html`<div class="cartao"><${Vazio} icone="texto" titulo="Nenhuma fala reconhecida">
     A gravação não tinha fala detectável, ou o áudio estava mudo.</${Vazio}></div>`;
 
+  // Clicar num horário mostra que a pessoa quer acompanhar dali: o acompanhamento volta.
+  const tocarAqui = tocar && ((t) => { seguir(); tocar(t); });
   const cores = new Map(conteudo.participantes.map((p, i) => [p, i]));
   const contador = { n: 0 };
   const blocos = conteudo.blocos.map((b, i) => {
     const atual = tempoAtual !== null && tempoAtual >= b.inicio_s && tempoAtual < b.fim_s + 0.5;
     return html`<article class=${"bloco" + (atual ? " atual" : "")} key=${i}>
-      <button type="button" class="tempo" onClick=${() => tocar && tocar(b.inicio_s)} disabled=${!tocar}
+      <button type="button" class="tempo" onClick=${() => tocarAqui && tocarAqui(b.inicio_s)} disabled=${!tocar}
         title=${tocar ? "Ouvir a partir deste ponto" : undefined} aria-label=${`${tocar ? "Ouvir a partir de" : "Tempo"} ${hms(b.inicio_s)}`}>${hms(b.inicio_s)}</button>
       <div class="falante"><${CorFalante} indice=${cores.get(b.falante) || 0} />${b.falante}
         ${b.sobreposto_a.length > 0 && html`<span class="sobreposto">falas simultâneas com ${b.sobreposto_a.join(", ")}</span>`}</div>
@@ -118,13 +247,18 @@ function AbaTexto({ id, versao, tocar, tempoAtual }) {
         <${Botao} tamanho="pequeno" icone="voltar" rotulo="Anterior" onClick=${() => setAtivo((a) => (a - 1 + total) % total)} />
         <${Botao} tamanho="pequeno" icone="avancar" rotulo="Próximo" onClick=${() => setAtivo((a) => (a + 1) % total)} />
       </div>`}
+      ${tocar && html`<${Interruptor} classe="compacto" titulo="Rolagem automática" marcado=${rolagem} aoMudar=${aoMudarRolagem}
+        dica="Durante a reprodução, a tela acompanha a fala que está tocando, com o player fixo no alto." />`}
     </div>
+    ${ligada && !seguindo && tempoAtual !== null && html`<div class="retomar-rolagem">
+      <${Botao} variante="primario" icone="alvo" onClick=${retomar}>Voltar ao trecho atual</${Botao}>
+    </div>`}
     <div class="legenda-marcas" aria-label="Legenda">
       <span><span class="incerto">texto</span> trecho incerto: confira na gravação</span>
       <span><span class="marcacao">[inaudível]</span> havia fala, mas não foi possível entender</span>
       <span><span class="marcacao">[falas simultâneas: ...]</span> outra pessoa falou ao mesmo tempo</span>
     </div>
-    <div class="cartao cartao-corpo" style="padding-top:6px;padding-bottom:6px"><div class="blocos">${blocos}</div></div>
+    <div class="cartao cartao-corpo" style="padding-top:6px;padding-bottom:6px"><div class="blocos" ref=${lista}>${blocos}</div></div>
   </div>`;
 }
 
@@ -404,17 +538,34 @@ function AbaArquivos({ det, aoGerar }) {
 
 // -- tela -----------------------------------------------------------------------------------------
 
-function Reprodutor({ det, refMidia, aoTempo, tempoAtual }) {
+// Com "fixar" (rolagem automática na aba Texto), o player fica no alto da tela a partir da primeira
+// reprodução, mesmo pausado, para o vídeo continuar à vista enquanto o texto rola.
+function Reprodutor({ det, refMidia, aoTempo, tempoAtual, tocando, aoTocar, fixar }) {
   const [falhou, setFalhou] = useState(false);
-  const [tocando, setTocando] = useState(false);
+  const [iniciado, setIniciado] = useState(false);
   const [visivel, setVisivel] = useState(true);
   const caixa = useRef(null);
+  const fixo = fixar && iniciado;
   useEffect(() => {
     if (!caixa.current || !window.IntersectionObserver) return undefined;
     const obs = new IntersectionObserver(([e]) => setVisivel(e.isIntersecting), { threshold: 0.2 });
     obs.observe(caixa.current);
     return () => obs.disconnect();
   }, [caixa.current]);
+  // A altura do player fixo desconta da área visível, para o foco do teclado e a busca não pararem atrás dele.
+  useEffect(() => {
+    const el = caixa.current;
+    if (!fixo || !el) return undefined;
+    const raiz = document.documentElement;
+    const medir = () => raiz.style.setProperty("--altura-reprodutor", `${Math.ceil(el.getBoundingClientRect().height)}px`);
+    medir();
+    const obs = window.ResizeObserver ? new ResizeObserver(medir) : null;
+    if (obs) obs.observe(el);
+    return () => {
+      if (obs) obs.disconnect();
+      raiz.style.removeProperty("--altura-reprodutor");
+    };
+  }, [fixo]);
   if (!det.origem_disponivel) {
     return html`<${Aviso} tipo="info" titulo="A gravação original não está no mesmo lugar">
       <p>Ela estava em <span class="mono">${det.arquivo_origem}</span>. Sem ela, os tempos não tocam o áudio; o texto continua disponível.</p>
@@ -427,11 +578,14 @@ function Reprodutor({ det, refMidia, aoTempo, tempoAtual }) {
     </${Aviso}>`;
   }
   const Tag = det.tem_video ? "video" : "audio";
-  return html`<div class=${"reprodutor" + (det.tem_video ? " com-video" : "")} ref=${caixa}>
-    <${Tag} ref=${refMidia} src=${api.urlMidia(det.id)} controls preload="metadata" aria-label=${`Gravação: ${det.nome}`}
-      onError=${() => setFalhou(true)} onTimeUpdate=${(e) => aoTempo(e.currentTarget.currentTime)}
-      onPlay=${() => setTocando(true)} onPause=${() => setTocando(false)} onEnded=${() => setTocando(false)} />
-    ${det.tem_video && html`<p class="ajuda">Clique em qualquer horário do texto para ouvir aquele trecho.</p>`}
+  const classes = ["reprodutor", det.tem_video ? "com-video" : "", fixo ? "fixo" : ""].filter(Boolean).join(" ");
+  return html`<div class=${classes} ref=${caixa}>
+    <div class="reprodutor-corpo">
+      <${Tag} ref=${refMidia} src=${api.urlMidia(det.id)} controls preload="metadata" aria-label=${`Gravação: ${det.nome}`}
+        onError=${() => setFalhou(true)} onTimeUpdate=${(e) => aoTempo(e.currentTarget.currentTime)}
+        onPlay=${() => { setIniciado(true); aoTocar(true); }} onPause=${() => aoTocar(false)} onEnded=${() => aoTocar(false)} />
+      ${det.tem_video && html`<p class="ajuda">Clique em qualquer horário do texto para ouvir aquele trecho.</p>`}
+    </div>
     ${tocando && !visivel && html`<div class="reproducao-flutuante" role="region" aria-label="Reprodução">
       <span class="ao-vivo" aria-hidden="true"></span>
       <span class="mono">${hms(tempoAtual || 0)}</span>
@@ -446,8 +600,11 @@ export function TelaTranscricao({ id, aba = "texto" }) {
   const [det, erro] = useCarregar(() => api.transcricao(id), [id, versao, extra]);
   const midia = useRef(null);
   const [tempoAtual, setTempoAtual] = useState(null);
+  const [tocando, setTocando] = useState(false);
+  const [rolagem, setRolagem] = useState(() => preferencia("rolagemAutomatica", false));
   useTitulo(det ? det.nome : "Transcrição");
   const recarregar = () => setExtra((x) => x + 1);
+  const mudarRolagem = (v) => { setRolagem(v); salvarPreferencia("rolagemAutomatica", v); };
 
   if (erro) {
     return html`<div class="conteudo"><a class="voltar" href="#/transcricoes"><${Icone} nome="voltar" tamanho=${16} /> Transcrições</a>
@@ -494,7 +651,8 @@ export function TelaTranscricao({ id, aba = "texto" }) {
       </div>
     </header>
 
-    <${Reprodutor} det=${det} refMidia=${midia} aoTempo=${setTempoAtual} tempoAtual=${tempoAtual} />
+    <${Reprodutor} det=${det} refMidia=${midia} aoTempo=${setTempoAtual} tempoAtual=${tempoAtual}
+      tocando=${tocando} aoTocar=${setTocando} fixar=${rolagem && abaAtual === "texto"} />
 
     <nav class="abas" aria-label="Seções da transcrição">
       ${ABAS.map((a) => html`<a href=${`#/transcricoes/${id}/${a.id}`} aria-current=${a.id === abaAtual ? "page" : undefined}>
@@ -504,7 +662,8 @@ export function TelaTranscricao({ id, aba = "texto" }) {
       </a>`)}
     </nav>
 
-    ${abaAtual === "texto" && html`<${AbaTexto} id=${id} versao=${versao + extra} tocar=${tocar} tempoAtual=${tempoAtual} />`}
+    ${abaAtual === "texto" && html`<${AbaTexto} id=${id} versao=${versao + extra} tocar=${tocar} tempoAtual=${tempoAtual}
+      tocando=${tocando} rolagem=${rolagem} aoMudarRolagem=${mudarRolagem} />`}
     ${abaAtual === "participantes" && html`<${AbaParticipantes} id=${id} versao=${versao} tocar=${tocar} aoSalvar=${recarregar} />`}
     ${abaAtual === "conferencia" && html`<${AbaConferencia} id=${id} versao=${versao + extra} tocar=${tocar} />`}
     ${abaAtual === "arquivos" && html`<${AbaArquivos} det=${det} aoGerar=${recarregar} />`}
