@@ -1,5 +1,9 @@
 """Interface de linha de comando.
 
+A forma recomendada de usar o Transcritor é o aplicativo (atalho "Transcritor" ou
+`transcritor app`). A linha de comando continua disponível, com as mesmas regras, para
+automação e para quem prefere o terminal.
+
 Exemplos:
     transcritor reuniao.mp4
     transcritor transcrever reuniao.mp4 -n 4 -c "Reunião do conselho sobre o orçamento 2027" -g glossario.txt
@@ -7,6 +11,8 @@ Exemplos:
     transcritor exportar reuniao_transcricao/reuniao.json -f docx,srt
     transcritor verificar
     transcritor configurar-token hf_xxxxxxxx
+    transcritor servidor               # só a API REST (documentação em http://127.0.0.1:8765/docs)
+    transcritor app                    # abre o aplicativo
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ from .erros import ErroTranscritor
 
 log = logging.getLogger("transcritor")
 
-COMANDOS = {"transcrever", "nomear", "exportar", "verificar", "configurar-token"}
+COMANDOS = {"transcrever", "nomear", "exportar", "verificar", "configurar-token", "servidor", "app"}
 
 
 def _formatos(valor: str) -> list[str]:
@@ -102,6 +108,13 @@ def _parser() -> argparse.ArgumentParser:
 
     tk = sub.add_parser("configurar-token", help="salva o token do Hugging Face para a diarização pyannote")
     tk.add_argument("token")
+
+    s = sub.add_parser("servidor", help="inicia só a API REST, sem janela (para integrações)")
+    s.add_argument("--host", help="endereço (padrão: 127.0.0.1, só este computador)")
+    s.add_argument("--porta", type=int, help="porta (padrão: 8765)")
+    s.add_argument("--sem-verificacao", action="store_true", help="não verifica o ambiente ao iniciar")
+
+    sub.add_parser("app", help="abre o aplicativo (janela)")
     return p
 
 
@@ -235,7 +248,8 @@ def _cmd_verificar(a: argparse.Namespace) -> int:
         log.info("Token do Hugging Face: não configurado (opcional). A diarização usará o pipeline\n"
                  "  pyannote 3.1 com componentes de acesso livre. Para usar o modelo mais recente\n"
                  "  (community-1): crie uma conta em huggingface.co, aceite os termos em\n"
-                 "  %s, gere um token de leitura e rode: transcritor configurar-token SEU_TOKEN", PAGINA_MODELO)
+                 "  %s, gere um token de leitura e salve-o no aplicativo\n"
+                 "  (Configurações) ou rode: transcritor configurar-token SEU_TOKEN", PAGINA_MODELO)
     situacao = {True: "baixado", False: "não baixado", None: "não verificado"}
     log.info("Modelos: %s", "; ".join(f"{m.nome} ({situacao[m.baixado]})" for m in r.modelos))
     if a.baixar_modelos:
@@ -252,6 +266,27 @@ def _cmd_token(a: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_servidor(a: argparse.Namespace) -> int:
+    from . import config
+    from .ambiente import configurar_log_aplicativo
+    from .api.servidor import executar
+
+    cfg = config.obter()
+    if a.host:
+        cfg = cfg.com(host=a.host)
+    if a.porta is not None:
+        cfg = cfg.com(porta=a.porta)
+    config.definir(cfg)
+    configurar_log_aplicativo(cfg)
+    return executar(cfg, verificar_ao_iniciar=not a.sem_verificacao)
+
+
+def _cmd_app(_a: argparse.Namespace) -> int:
+    from .desktop import main as abrir
+
+    return abrir([])
+
+
 def main(argv: list[str] | None = None) -> None:
     preparar()
     configurar_log()
@@ -264,7 +299,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.print_help()
         sys.exit(0)
     acoes = {"transcrever": _cmd_transcrever, "nomear": _cmd_nomear, "exportar": _cmd_exportar,
-             "verificar": _cmd_verificar, "configurar-token": _cmd_token}
+             "verificar": _cmd_verificar, "configurar-token": _cmd_token, "servidor": _cmd_servidor,
+             "app": _cmd_app}
     try:
         codigo = acoes[a.comando](a)
     except ErroTranscritor as e:
