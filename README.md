@@ -257,7 +257,7 @@ mesma gravação, as etapas já concluídas são reaproveitadas.
 | `src/transcritor/processamento/` | `audio`, `diarizacao`, `asr`, `qualidade`, `revisao`, `montagem`, `exportar`, `relatorio`, `nomes`, `documento` (leitura do JSON e geração das saídas) e `pipeline` (orquestração com cache por etapa). |
 | `src/transcritor/servicos/` | `contratos` (modelos de entrada e saída), `transcricoes`, `participantes`, `glossario`, `midia`, `diagnostico`, `configuracao`, `sistema`, `catalogo`, `tarefas`, `execucao`, `progresso`, `eventos`, `repositorio` e `contexto`. |
 | `src/transcritor/api/` | Aplicação FastAPI, rotas por categoria, formato de erro, proteção local e documentação. |
-| `src/transcritor/desktop/` | Janela, instância única, páginas de abertura e de erro, atalhos. |
+| `src/transcritor/desktop/` | Janela, instância única, páginas de abertura e de erro, atalhos e o lançador que abre o aplicativo sem janela de console. |
 | `src/transcritor/web/` | Interface (HTML, CSS e JavaScript em módulos, sem etapa de build). |
 | `config.py`, `erros.py`, `ambiente.py` | Configurações centralizadas, erros com mensagens para pessoas, ambiente de execução. |
 

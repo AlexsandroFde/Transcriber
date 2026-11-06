@@ -24,10 +24,8 @@ dependencies = [
 
 [project.scripts]
 transcritor = "transcritor.cli:main"
-
-# Inicializador do aplicativo, sem janela de console (alvo do atalho "Transcritor").
-[project.gui-scripts]
-transcritor-app = "transcritor.desktop:main"
+# Sem gui-scripts: o uv cria o pythonw.exe do ambiente como programa de console, e um inicializador
+# gerado por ele abriria uma janela de console. O atalho "Transcritor" usa src/transcritor/desktop/lancador.py.
 
 [dependency-groups]
 dev = [

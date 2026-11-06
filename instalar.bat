@@ -45,12 +45,12 @@ if errorlevel 1 (
 echo.
 echo   [3/4] Criando o atalho Transcritor na Area de Trabalho e no menu Iniciar...
 ".venv\Scripts\python.exe" -m transcritor.desktop.atalhos
-if errorlevel 1 echo   Aviso: os atalhos nao foram criados. O programa abre por .venv\Scripts\transcritor-app.exe
+if errorlevel 1 echo   Aviso: os atalhos nao foram criados. Para abrir o programa, execute este instalador de novo.
 
 echo.
 echo   [4/4] Abrindo o Transcritor. Na primeira vez ele baixa os modelos de IA, cerca de 3 GB,
 echo         e mostra o andamento na propria janela.
-start "" "%~dp0.venv\Scripts\transcritor-app.exe" --preparar
+".venv\Scripts\python.exe" -m transcritor.desktop.atalhos --abrir --preparar
 echo.
 echo   Pronto. Nas proximas vezes, use o atalho Transcritor na Area de Trabalho.
 timeout /t 10 >nul

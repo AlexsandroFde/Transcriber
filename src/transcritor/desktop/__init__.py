@@ -1,8 +1,9 @@
 """Inicializador do aplicativo (atalho "Transcritor").
 
 Abre a janela, sobe o serviço local, garante uma única instância e encerra tudo ao fechar.
-Uso: `transcritor-app [arquivos...] [--preparar]` (o atalho na Área de Trabalho chama este
-programa; um vídeo arrastado sobre o atalho chega como argumento).
+Uso: `python -m transcritor.desktop [arquivos...] [--preparar]`. O atalho na Área de Trabalho
+chama este módulo sem console, pelo lançador (lancador.py); um vídeo arrastado sobre o atalho
+chega como argumento.
 
 --preparar  baixa os modelos de IA logo ao abrir (usado pelo instalar.bat na primeira vez).
 """
