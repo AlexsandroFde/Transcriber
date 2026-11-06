@@ -26,7 +26,7 @@ COMANDOS = {"transcrever", "nomear", "exportar", "verificar", "configurar-token"
 
 
 def _formatos(valor: str) -> list[str]:
-    from .exportar import FORMATOS
+    from .processamento.exportar import FORMATOS
 
     itens = [v.strip().lower().lstrip(".") for v in valor.split(",") if v.strip()]
     invalidos = [v for v in itens if v not in FORMATOS]
@@ -112,8 +112,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _cmd_transcrever(a: argparse.Namespace) -> int:
-    from .exportar import FORMATOS
-    from .pipeline import Opcoes, processar
+    from .processamento.exportar import FORMATOS
+    from .processamento.pipeline import Opcoes, processar
 
     op = Opcoes(
         saida=Path(a.saida) if a.saida else None,
@@ -177,10 +177,10 @@ def _perguntar_nomes(dados: dict) -> list[tuple[str, str]]:
     """Mostra cada participante com exemplos de fala e nomes mencionados; pergunta o nome."""
     from collections import Counter
 
-    from . import tempo
-    from .modelos import Palavra
-    from .nomes import sugerir
-    from .relatorio import frases_com_tempo
+    from .processamento import tempo
+    from .processamento.modelos import Palavra
+    from .processamento.nomes import sugerir
+    from .processamento.relatorio import frases_com_tempo
 
     palavras = [Palavra.de_dict(p) for p in dados["palavras"]]
     frases = frases_com_tempo(palavras)
@@ -216,8 +216,8 @@ def _perguntar_nomes(dados: dict) -> list[tuple[str, str]]:
 
 
 def _cmd_nomear(a: argparse.Namespace) -> int:
-    from .exportar import FORMATOS
-    from .pipeline import carregar_transcricao, gerar_saidas
+    from .processamento.exportar import FORMATOS
+    from .processamento.pipeline import carregar_transcricao, gerar_saidas
 
     caminho = Path(a.json)
     dados = carregar_transcricao(caminho)
@@ -251,8 +251,8 @@ def _cmd_nomear(a: argparse.Namespace) -> int:
 
 
 def _cmd_exportar(a: argparse.Namespace) -> int:
-    from .exportar import FORMATOS
-    from .pipeline import carregar_transcricao, gerar_saidas
+    from .processamento.exportar import FORMATOS
+    from .processamento.pipeline import carregar_transcricao, gerar_saidas
 
     caminho = Path(a.json)
     dados = carregar_transcricao(caminho)
@@ -280,7 +280,7 @@ def _cmd_verificar(a: argparse.Namespace) -> int:
         try:
             from huggingface_hub import HfApi
 
-            from .diarizacao import MODELO_PYANNOTE, PAGINA_MODELO
+            from .processamento.diarizacao import MODELO_PYANNOTE, PAGINA_MODELO
 
             try:
                 HfApi().model_info(MODELO_PYANNOTE, token=token, files_metadata=False)
@@ -295,7 +295,7 @@ def _cmd_verificar(a: argparse.Namespace) -> int:
         except Exception as e:
             log.error("Não foi possível verificar o acesso ao Hugging Face: %s", e)
     else:
-        from .diarizacao import PAGINA_MODELO
+        from .processamento.diarizacao import PAGINA_MODELO
 
         log.info("Token do Hugging Face: não configurado (opcional). A diarização usará o pipeline\n"
                  "  pyannote 3.1 com componentes de acesso livre. Para usar o modelo mais recente\n"
@@ -303,18 +303,18 @@ def _cmd_verificar(a: argparse.Namespace) -> int:
                  "  %s, gere um token de leitura e rode: transcritor configurar-token SEU_TOKEN", PAGINA_MODELO)
     if a.baixar_modelos:
         log.info("Baixando/verificando o modelo de reconhecimento %s...", a.modelo)
-        from .asr import Reconhecedor
+        from .processamento.asr import Reconhecedor
 
         rec = Reconhecedor(a.modelo)
         log.info("Modelo %s pronto (%s, %s).", a.modelo, rec.dispositivo, rec.precisao)
         rec.liberar()
         log.info("Baixando/verificando os modelos de diarização...")
-        from .diarizacao import modelos_livre
+        from .processamento.diarizacao import modelos_livre
 
         modelos_livre()
         if token:
             from .ambiente import carregar_torch
-            from .diarizacao import MODELO_PYANNOTE
+            from .processamento.diarizacao import MODELO_PYANNOTE
 
             carregar_torch()
             from pyannote.audio import Pipeline

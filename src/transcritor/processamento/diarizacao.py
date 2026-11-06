@@ -30,7 +30,7 @@ from typing import Callable
 
 import numpy as np
 
-from .ambiente import carregar_torch, pasta_modelos
+from ..ambiente import carregar_torch, pasta_modelos
 from .audio import TAXA
 from .modelos import Turno
 

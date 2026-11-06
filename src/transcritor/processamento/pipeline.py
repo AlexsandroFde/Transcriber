@@ -17,8 +17,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__
-from .ambiente import caminho_ffmpeg, configurar_log, descrever_gpu, token_hf
+from .. import __version__
+from ..ambiente import caminho_ffmpeg, configurar_log, descrever_gpu, token_hf
 from .intervalos import unir
 from .modelos import Marcador, Palavra, SegmentoASR, Turno
 from .montagem import (OpcoesMontagem, atribuir_falantes, falante_em, marcadores_simultaneos,

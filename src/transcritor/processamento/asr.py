@@ -20,7 +20,7 @@ from typing import Callable
 
 import numpy as np
 
-from .ambiente import carregar_torch, cuda_disponivel
+from ..ambiente import carregar_torch, cuda_disponivel
 from .audio import TAXA
 from .intervalos import Intervalo, expandir, unir
 from .modelos import Palavra, SegmentoASR

@@ -5,19 +5,19 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from transcritor import tempo
-from transcritor.asr import MapaFala, construir_trechos
-from transcritor.diarizacao import exclusivizar
-from transcritor.exportar import Documento, gerar_legendas, para_markdown, para_srt
-from transcritor.intervalos import sobreposicao, subtrair, unir
-from transcritor.modelos import Marcador, Palavra, SegmentoASR, Turno
-from transcritor.montagem import (OpcoesMontagem, atribuir_falantes, marcadores_simultaneos, montar_blocos,
+from transcritor.processamento import tempo
+from transcritor.processamento.asr import MapaFala, construir_trechos
+from transcritor.processamento.diarizacao import exclusivizar
+from transcritor.processamento.exportar import Documento, gerar_legendas, para_markdown, para_srt
+from transcritor.processamento.intervalos import sobreposicao, subtrair, unir
+from transcritor.processamento.modelos import Marcador, Palavra, SegmentoASR, Turno
+from transcritor.processamento.montagem import (OpcoesMontagem, atribuir_falantes, marcadores_simultaneos, montar_blocos,
                                   rotular, suavizar, texto_bloco)
-from transcritor.nomes import agrupar, sugerir
-from transcritor.qualidade import (assinatura_alucinacao, combinar, diagnosticar_segmento, eco_do_prompt,
+from transcritor.processamento.nomes import agrupar, sugerir
+from transcritor.processamento.qualidade import (assinatura_alucinacao, combinar, diagnosticar_segmento, eco_do_prompt,
                                    escolher, marcar_incertas, repeticao_excessiva, termos_da_reuniao)
-from transcritor.revisao import OpcoesRevisao, lacunas, montar_janelas
-from transcritor.texto import capitalizar_inicio, juntar_palavras, tokens
+from transcritor.processamento.revisao import OpcoesRevisao, lacunas, montar_janelas
+from transcritor.processamento.texto import capitalizar_inicio, juntar_palavras, tokens
 
 
 def P(ini, fim, txt, prob=0.9, falante=None):
@@ -54,7 +54,7 @@ def test_texto():
 # --- tratamento de canais ----------------------------------------------------
 
 def test_tratar_canais():
-    from transcritor.audio import tratar_canais
+    from transcritor.processamento.audio import tratar_canais
 
     rng = np.random.default_rng(0)
     voz = (0.1 * rng.standard_normal(16000 * 3)).astype(np.float32)
