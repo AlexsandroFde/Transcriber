@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from dataclasses import dataclass, field
 
 from . import tempo
 from .intervalos import unir
@@ -55,7 +56,7 @@ CATEGORIAS: dict[str, list[str]] = {
 _RX_CATEGORIAS = {c: [re.compile(p, re.IGNORECASE) for p in ps] for c, ps in CATEGORIAS.items()}
 
 
-def _descrever_filtros(filtros: list[str]) -> str:
+def descrever_filtros(filtros: list[str]) -> str:
     nomes = {"afftdn": "redução de ruído", "dynaudnorm": "normalização dinâmica de volume"}
     descr = [nomes.get(f.split("=", 1)[0], f.split("=", 1)[0]) for f in filtros]
     return ", ".join(["filtro passa-altas", "normalização de volume"] + descr)
@@ -91,44 +92,95 @@ def _tabela(cabecalho: list[str], linhas: list[list[str]]) -> list[str]:
     return out
 
 
-def gerar(dados: dict, exibir: dict[str, str], palavras: list[Palavra], marcadores: list[Marcador]) -> str:
+# ---------------------------------------------------------------------------
+# Análise (dados estruturados) e renderização em Markdown
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ParticipanteRelatorio:
+    nome: str
+    primeira_fala: float
+    tempo_fala: float  # inclui pausas curtas (até 1 s) entre palavras do mesmo falante
+    parcela: float  # 0 a 1
+    palavras: int
+
+
+@dataclass
+class Indicadores:
+    palavras: int
+    incertas: int
+    inaudiveis: int
+    simultaneas: int
+    janelas_revisadas: int
+    janelas_alteradas: int
+    recuperadas: int
+    alucinacoes: int
+
+    @property
+    def percentual_incertas(self) -> float:
+        return 100 * self.incertas / max(1, self.palavras)
+
+
+@dataclass
+class PontoConferencia:
+    inicio: float
+    participante: str  # vazio para frases descartadas (não atribuídas a ninguém)
+    tipo: str  # "trecho incerto" | "inaudível" | "descartado"
+    trecho: str
+
+
+@dataclass
+class SugestaoNome:
+    participante: str
+    nome: str
+    diretas: int
+    indiretas: int
+    exemplo_inicio: float
+    exemplo: str
+
+    @property
+    def evidencias(self) -> str:
+        partes = []
+        if self.diretas:
+            partes.append(f"{self.diretas} autoidentificação" + ("ões" if self.diretas > 1 else ""))
+        if self.indiretas:
+            plural = "s" if self.indiretas > 1 else ""
+            partes.append(f"{self.indiretas} indício{plural} indireto{plural}")
+        return ", ".join(partes)
+
+
+@dataclass
+class Mencao:
+    inicio: float
+    participante: str
+    texto: str
+
+
+@dataclass
+class Relatorio:
+    arquivo: str
+    base: str
+    duracao: float
+    gerado_em: str
+    processamento: dict = field(default_factory=dict)
+    observacoes: list[str] = field(default_factory=list)
+    participantes: list[ParticipanteRelatorio] = field(default_factory=list)
+    indicadores: Indicadores | None = None
+    pontos: list[PontoConferencia] = field(default_factory=list)
+    sugestoes: list[SugestaoNome] = field(default_factory=list)
+    mencoes: dict[str, list[Mencao]] = field(default_factory=dict)  # só categorias com menções
+
+
+def analisar(dados: dict, exibir: dict[str, str], palavras: list[Palavra], marcadores: list[Marcador]) -> Relatorio:
+    """Calcula todo o conteúdo do relatório (usado pelo Markdown e pela API)."""
     nome = lambda f: exibir.get(f, ROTULO_DESCONHECIDO) if f else ROTULO_DESCONHECIDO  # noqa: E731
     arq = dados["arquivo"]
-    proc = dados["processamento"]
-    out = [f"# Relatório de qualidade: {arq['nome']}", ""]
-    out += [
-        "Este relatório apoia a conferência da transcrição. Ele não resume a reunião: todas as",
-        "citações abaixo são trechos literais da transcrição, com a marcação de tempo para",
-        "localizar o ponto exato na gravação.",
-        "",
-        "## Processamento",
-        "",
-        f"- **Arquivo:** {arq['nome']} ({tempo.duracao_legivel(arq['duracao'])})",
-        f"- **Processado em:** {dados['gerado_em']}",
-        f"- **Tempo total de processamento:** {tempo.duracao_legivel(proc.get('tempo_total_s', 0))}",
-        f"- **Reconhecimento de fala:** {proc.get('descricao_asr', '')}",
-        f"- **Dispositivo:** {proc.get('dispositivo', '')}",
-        f"- **Diarização:** {proc.get('descricao_diarizacao', '')}",
-    ]
-    pre = proc.get("preprocessamento") or {}
-    if pre:
-        med = pre.get("medicoes", {})
-        out += [
-            f"- **Canais:** {pre.get('canais', {}).get('decisao', '')}",
-            f"- **Nível de fala / ruído de fundo:** {med.get('nivel_fala_db')} dBFS / {med.get('nivel_ruido_db')} dBFS "
-            f"(relação sinal-ruído estimada: {med.get('snr_db')} dB)",
-            f"- **Tratamento do áudio para o reconhecimento:** {_descrever_filtros(pre.get('filtros_asr') or [])}",
-        ]
-        for o in pre.get("observacoes", []):
-            out.append(f"- {o}")
-    for o in dados.get("observacoes", []):
-        out.append(f"- {o}")
-    etapas = proc.get("tempos_etapas_s") or {}
-    if etapas:
-        out.append("- **Tempo por etapa:** " + ", ".join(f"{k} {tempo.duracao_legivel(v)}" for k, v in etapas.items()))
+    rel = Relatorio(arquivo=arq["nome"], base=arq["base"], duracao=float(arq["duracao"]),
+                    gerado_em=dados["gerado_em"], processamento=dict(dados["processamento"]),
+                    observacoes=list(dados.get("observacoes", [])))
 
     # Participantes (tempo de fala inclui pausas curtas entre palavras do mesmo falante)
-    out += ["", "## Participantes", ""]
     intervalos_por: dict[str, list] = defaultdict(list)
     palavras_por: dict[str, int] = defaultdict(int)
     primeira: dict[str, float] = {}
@@ -139,29 +191,22 @@ def gerar(dados: dict, exibir: dict[str, str], palavras: list[Palavra], marcador
         primeira.setdefault(n, p.inicio)
     fala_por = {n: sum(b - a for a, b in unir(iv, tolerancia=1.0)) for n, iv in intervalos_por.items()}
     total = sum(fala_por.values()) or 1.0
-    linhas = []
-    for n in sorted(fala_por, key=lambda x: primeira[x]):
-        linhas.append([n, tempo.hms(primeira[n]), tempo.duracao_legivel(fala_por[n]),
-                       f"{100 * fala_por[n] / total:.0f}%", str(palavras_por[n])])
-    out += _tabela(["Participante", "Primeira fala", "Tempo de fala (aprox.)", "Parcela", "Palavras"], linhas)
+    rel.participantes = [ParticipanteRelatorio(n, primeira[n], fala_por[n], fala_por[n] / total, palavras_por[n])
+                         for n in sorted(fala_por, key=lambda x: primeira[x])]
 
     # Qualidade
     rev = dados.get("revisao", {}).get("estatisticas", {})
-    n_incertas = sum(1 for p in palavras if p.incerta)
-    n_inaud = sum(1 for m in marcadores if m.tipo == "inaudivel")
-    n_simul = sum(1 for m in marcadores if m.tipo == "simultanea")
     aluc = dados.get("alucinacoes_removidas", [])
-    out += ["", "## Indicadores de qualidade", ""]
-    out += [
-        f"- Palavras transcritas: {len(palavras)}",
-        f"- Palavras sinalizadas como incertas: {n_incertas} ({100 * n_incertas / max(1, len(palavras)):.1f}%)",
-        f"- Trechos inaudíveis: {n_inaud}",
-        f"- Falas simultâneas não transcritas: {n_simul}",
-        f"- Trechos revisados no segundo passo (três decodificações por trecho): {rev.get('janelas', 0)} "
-        f"({rev.get('alteradas', 0)} com texto alterado ou sinalizado)",
-        f"- Palavras recuperadas de trechos omitidos no primeiro passo: {rev.get('palavras_recuperadas', 0)}",
-        f"- Frases descartadas como alucinação do modelo: {len(aluc)}",
-    ]
+    rel.indicadores = Indicadores(
+        palavras=len(palavras),
+        incertas=sum(1 for p in palavras if p.incerta),
+        inaudiveis=sum(1 for m in marcadores if m.tipo == "inaudivel"),
+        simultaneas=sum(1 for m in marcadores if m.tipo == "simultanea"),
+        janelas_revisadas=rev.get("janelas", 0),
+        janelas_alteradas=rev.get("alteradas", 0),
+        recuperadas=rev.get("palavras_recuperadas", 0),
+        alucinacoes=len(aluc),
+    )
 
     # Pontos para conferência
     pontos: list[tuple[float, str, str, str]] = []
@@ -195,51 +240,108 @@ def gerar(dados: dict, exibir: dict[str, str], palavras: list[Palavra], marcador
     for a in aluc:
         pontos.append((a["inicio"], "", "descartado", f"\"{a['texto']}\" ({a['motivo']})"))
     pontos.sort()
+    rel.pontos = [PontoConferencia(*p) for p in pontos]
+
+    # Sugestões de nomes
+    frases = frases_com_tempo(palavras)
+    for f, itens in sorted(agrupar(sugerir(frases)).items(), key=lambda x: nome(x[0])):
+        for nome_sug, diretas, indiretas, exemplos in itens[:3]:
+            ex = exemplos[0]
+            rel.sugestoes.append(SugestaoNome(nome(f), nome_sug, diretas, indiretas, ex.tempo, ex.trecho))
+
+    # Índice de menções (citações completas: reticências de hesitação não encerram a frase)
+    frases = frases_com_tempo(palavras, reticencias=False)
+    for cat, regexes in _RX_CATEGORIAS.items():
+        achados = [Mencao(t, nome(f), tx) for t, _fim, f, tx in frases if any(r.search(tx) for r in regexes)]
+        if achados:
+            rel.mencoes[cat] = achados
+    return rel
+
+
+def para_markdown(rel: Relatorio) -> str:
+    proc = rel.processamento
+    out = [f"# Relatório de qualidade: {rel.arquivo}", ""]
+    out += [
+        "Este relatório apoia a conferência da transcrição. Ele não resume a reunião: todas as",
+        "citações abaixo são trechos literais da transcrição, com a marcação de tempo para",
+        "localizar o ponto exato na gravação.",
+        "",
+        "## Processamento",
+        "",
+        f"- **Arquivo:** {rel.arquivo} ({tempo.duracao_legivel(rel.duracao)})",
+        f"- **Processado em:** {rel.gerado_em}",
+        f"- **Tempo total de processamento:** {tempo.duracao_legivel(proc.get('tempo_total_s', 0))}",
+        f"- **Reconhecimento de fala:** {proc.get('descricao_asr', '')}",
+        f"- **Dispositivo:** {proc.get('dispositivo', '')}",
+        f"- **Diarização:** {proc.get('descricao_diarizacao', '')}",
+    ]
+    pre = proc.get("preprocessamento") or {}
+    if pre:
+        med = pre.get("medicoes", {})
+        out += [
+            f"- **Canais:** {pre.get('canais', {}).get('decisao', '')}",
+            f"- **Nível de fala / ruído de fundo:** {med.get('nivel_fala_db')} dBFS / {med.get('nivel_ruido_db')} dBFS "
+            f"(relação sinal-ruído estimada: {med.get('snr_db')} dB)",
+            f"- **Tratamento do áudio para o reconhecimento:** {descrever_filtros(pre.get('filtros_asr') or [])}",
+        ]
+        for o in pre.get("observacoes", []):
+            out.append(f"- {o}")
+    for o in rel.observacoes:
+        out.append(f"- {o}")
+    etapas = proc.get("tempos_etapas_s") or {}
+    if etapas:
+        out.append("- **Tempo por etapa:** " + ", ".join(f"{k} {tempo.duracao_legivel(v)}" for k, v in etapas.items()))
+
+    out += ["", "## Participantes", ""]
+    linhas = [[p.nome, tempo.hms(p.primeira_fala), tempo.duracao_legivel(p.tempo_fala), f"{100 * p.parcela:.0f}%",
+               str(p.palavras)] for p in rel.participantes]
+    out += _tabela(["Participante", "Primeira fala", "Tempo de fala (aprox.)", "Parcela", "Palavras"], linhas)
+
+    ind = rel.indicadores
+    assert ind is not None
+    out += ["", "## Indicadores de qualidade", ""]
+    out += [
+        f"- Palavras transcritas: {ind.palavras}",
+        f"- Palavras sinalizadas como incertas: {ind.incertas} ({ind.percentual_incertas:.1f}%)",
+        f"- Trechos inaudíveis: {ind.inaudiveis}",
+        f"- Falas simultâneas não transcritas: {ind.simultaneas}",
+        f"- Trechos revisados no segundo passo (três decodificações por trecho): {ind.janelas_revisadas} "
+        f"({ind.janelas_alteradas} com texto alterado ou sinalizado)",
+        f"- Palavras recuperadas de trechos omitidos no primeiro passo: {ind.recuperadas}",
+        f"- Frases descartadas como alucinação do modelo: {ind.alucinacoes}",
+    ]
+
     out += ["", "## Pontos para conferência", ""]
-    if pontos:
+    if rel.pontos:
         out += ["Ouça a gravação nestes pontos para confirmar ou corrigir o texto.", ""]
-        out += _tabela(["Tempo", "Participante", "Tipo", "Trecho"], [[tempo.hms(t), n, tp, tx] for t, n, tp, tx in pontos])
+        out += _tabela(["Tempo", "Participante", "Tipo", "Trecho"],
+                       [[tempo.hms(p.inicio), p.participante, p.tipo, p.trecho] for p in rel.pontos])
     else:
         out.append("Nenhum ponto de dúvida registrado.")
 
-    frases = frases_com_tempo(palavras)
-
-    # Sugestões de nomes
     out += ["", "## Sugestões de nomes (exigem confirmação)", ""]
-    evid = sugerir(frases)
-    if evid:
+    if rel.sugestoes:
         out += ["Os nomes abaixo foram mencionados na própria fala. Nenhum foi aplicado automaticamente.",
                 "Autoidentificação (\"aqui é a Ana\") é evidência forte; indício indireto vem de alguém",
-                "se dirigir à pessoa pelo nome logo antes ou logo depois da fala dela. Para aplicar:", "",
-                "```", f"transcritor nomear \"{arq['base']}.json\" --interativo", "```", ""]
-        linhas = []
-        for f, itens in sorted(agrupar(evid).items(), key=lambda x: nome(x[0])):
-            for nome_sug, diretas, indiretas, exemplos in itens[:3]:
-                partes = []
-                if diretas:
-                    partes.append(f"{diretas} autoidentificação" + ("ões" if diretas > 1 else ""))
-                if indiretas:
-                    partes.append(f"{indiretas} indício" + ("s" if indiretas > 1 else "") + " indireto"
-                                  + ("s" if indiretas > 1 else ""))
-                ex = exemplos[0]
-                linhas.append([nome(f), nome_sug, ", ".join(partes), f"[{tempo.hms(ex.tempo)}] {ex.trecho}"])
-        out += _tabela(["Participante", "Nome sugerido", "Evidências", "Exemplo"], linhas)
+                "se dirigir à pessoa pelo nome logo antes ou logo depois da fala dela. Para aplicar, abra",
+                "a transcrição no Transcritor (aba Participantes) ou use a linha de comando:", "",
+                "```", f"transcritor nomear \"{rel.base}.json\" --interativo", "```", ""]
+        out += _tabela(["Participante", "Nome sugerido", "Evidências", "Exemplo"],
+                       [[s.participante, s.nome, s.evidencias, f"[{tempo.hms(s.exemplo_inicio)}] {s.exemplo}"]
+                        for s in rel.sugestoes])
     else:
         out.append("Nenhuma autoidentificação ou menção clara de nomes foi encontrada.")
-    frases = frases_com_tempo(palavras, reticencias=False)
 
-    # Índice de menções
     out += ["", "## Índice de menções para conferência", "",
             "Citações literais que contêm valores, datas, prazos, horários, percentuais ou encaminhamentos.", ""]
-    algum = False
-    for cat, regexes in _RX_CATEGORIAS.items():
-        achados = [(t, f, tx) for t, _fim, f, tx in frases if any(r.search(tx) for r in regexes)]
-        if not achados:
-            continue
-        algum = True
+    for cat, itens in rel.mencoes.items():
         out += [f"### {cat}", ""]
-        out += [f"- **[{tempo.hms(t)}] {nome(f)}:** {tx}" for t, f, tx in achados]
+        out += [f"- **[{tempo.hms(m.inicio)}] {m.participante}:** {m.texto}" for m in itens]
         out.append("")
-    if not algum:
+    if not rel.mencoes:
         out.append("Nenhuma menção encontrada.")
     return "\n".join(out).rstrip() + "\n"
+
+
+def gerar(dados: dict, exibir: dict[str, str], palavras: list[Palavra], marcadores: list[Marcador]) -> str:
+    return para_markdown(analisar(dados, exibir, palavras, marcadores))
