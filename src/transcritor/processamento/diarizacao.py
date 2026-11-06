@@ -158,7 +158,7 @@ def _diarizar_pyannote(audio: np.ndarray, token: str | None, num: int | None, mi
         raise ErroDiarizacao(
             "O modelo de diarização pyannote exige um token do Hugging Face. "
             f"Aceite os termos em {PAGINA_MODELO} e configure o token "
-            "(comando: transcritor configurar-token SEU_TOKEN)."
+            "(no Transcritor, em Configurações; ou pelo comando: transcritor configurar-token SEU_TOKEN)."
         )
     carregar_torch()
     from pyannote.audio import Pipeline
