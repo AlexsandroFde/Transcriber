@@ -16,6 +16,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Literal, Protocol
 
 from .. import __version__
 from ..ambiente import caminho_ffmpeg, configurar_log, descrever_gpu, token_hf
@@ -33,6 +34,10 @@ log = logging.getLogger("transcritor")
 VERSAO_CACHE = "1"
 VERSAO_REVISAO = "5"  # mude quando o algoritmo de revisão mudar, para invalidar o cache dessa etapa
 SEM_DIARIZACAO = "SEM_DIARIZACAO"
+TOTAL_ETAPAS = 6
+
+# Situação de uma etapa ao ser anunciada.
+Situacao = Literal["executando", "reaproveitada", "ignorada"]
 
 
 @dataclass
@@ -93,6 +98,20 @@ class Cache:
         temp.replace(self.pasta / f"{nome}.json")
 
 
+class BarraProgresso(Protocol):
+    def __call__(self, fracao: float) -> None: ...
+
+    def fim(self) -> None: ...
+
+
+class Relator(Protocol):
+    """Recebe o andamento do processamento: console (CLI), eventos para a API etc."""
+
+    def etapa(self, numero: int, total: int, texto: str, situacao: Situacao = "executando") -> None: ...
+
+    def barra(self, rotulo: str) -> BarraProgresso: ...
+
+
 class Progresso:
     """Barra de progresso simples com estimativa de tempo restante."""
 
@@ -129,28 +148,45 @@ class Progresso:
             sys.stdout.flush()
 
 
-def _etapa(n: int, total: int, texto: str) -> None:
-    log.info("[%d/%d] %s", n, total, texto)
+class RelatorConsole:
+    """Comportamento da linha de comando: "[n/6] texto" no registro e barra no terminal."""
+
+    def etapa(self, numero: int, total: int, texto: str, situacao: Situacao = "executando") -> None:
+        log.info("[%d/%d] %s", numero, total, texto)
+
+    def barra(self, rotulo: str) -> BarraProgresso:
+        return Progresso(rotulo)
 
 
-def processar(entrada: Path, op: Opcoes) -> Path:
+def pasta_de_saida(entrada: Path, saida: Path | None) -> Path:
+    """Pasta dos resultados: `<saida>/<nome>` ou, sem saída, `<pasta do arquivo>/<nome>_transcricao`."""
+    entrada = entrada.resolve()
+    base = entrada.stem
+    return (saida.resolve() / base) if saida else entrada.parent / f"{base}_transcricao"
+
+
+def processar(entrada: Path, op: Opcoes, relator: Relator | None = None) -> Path:
     """Processa um arquivo de vídeo/áudio e grava todas as saídas. Retorna o caminho do JSON."""
     from .audio import carregar_wav, extrair_audio, preprocessar, sondar
     from .diarizacao import ResultadoDiarizacao, diarizar, regioes_de_fala
 
+    relator = relator or RelatorConsole()
     t_inicio = time.time()
     entrada = entrada.resolve()
     if not entrada.exists():
         raise FileNotFoundError(f"Arquivo não encontrado: {entrada}")
     base = entrada.stem
-    pasta = (op.saida.resolve() / base) if op.saida else entrada.parent / f"{base}_transcricao"
+    pasta = pasta_de_saida(entrada, op.saida)
     trabalho = pasta / ".trabalho"
     trabalho.mkdir(parents=True, exist_ok=True)
     configurar_log(pasta / f"{base}.log", detalhado=op.detalhado)
     cache = Cache(trabalho, ignorar=op.refazer)
     tempos: dict[str, float] = {}
-    total_etapas = 6
+    total_etapas = TOTAL_ETAPAS
     ffmpeg = caminho_ffmpeg()
+
+    def _etapa(n: int, total: int, texto: str, situacao: Situacao = "executando") -> None:
+        relator.etapa(n, total, texto, situacao)
 
     log.info("")
     log.info("Arquivo: %s", entrada.name)
@@ -178,7 +214,7 @@ def processar(entrada: Path, op: Opcoes) -> Path:
             return dados
         t = time.time()
         _etapa(1, total_etapas, "Extraindo o áudio do arquivo")
-        prog = Progresso("extração")
+        prog = relator.barra("extração")
         dados = extrair_audio(ffmpeg, entrada, extraido, info, op.faixa, prog)
         prog.fim()
         cache.gravar("extracao", k_ext, dados)
@@ -202,7 +238,7 @@ def processar(entrada: Path, op: Opcoes) -> Path:
         for o in res.observacoes:
             log.info("    %s", o)
     else:
-        _etapa(2, total_etapas, "Áudio já preparado (reaproveitado)")
+        _etapa(2, total_etapas, "Áudio já preparado (reaproveitado)", "reaproveitada")
     fala_vad = [tuple(x) for x in pre["fala_vad"]]
     if not op.manter_audio and extraido.exists():
         extraido.unlink()
@@ -219,12 +255,12 @@ def processar(entrada: Path, op: Opcoes) -> Path:
         cache_dia = cache.ler("diarizacao", k_dia)
         if cache_dia is not None:
             dia = ResultadoDiarizacao.de_dict(cache_dia)
-            _etapa(3, total_etapas, f"Participantes já identificados (reaproveitado, {dia.backend})")
+            _etapa(3, total_etapas, f"Participantes já identificados (reaproveitado, {dia.backend})", "reaproveitada")
         else:
             t = time.time()
             _etapa(3, total_etapas, "Identificando os participantes (diarização)")
             audio_base = carregar_wav(base_wav)
-            prog = Progresso("diarização")
+            prog = relator.barra("diarização")
             try:
                 dia = diarizar(audio_base, op.diarizacao, token, op.num_participantes, op.min_participantes,
                                op.max_participantes, op.dispositivo != "cpu", op.limiar_sherpa, prog)
@@ -241,7 +277,7 @@ def processar(entrada: Path, op: Opcoes) -> Path:
         if dia is not None:
             log.info("    %d participantes detectados (%s)", len(dia.falantes), dia.backend)
     else:
-        _etapa(3, total_etapas, "Diarização desativada")
+        _etapa(3, total_etapas, "Diarização desativada", "ignorada")
         k_dia = "nenhuma"
 
     fala_diar = regioes_de_fala(dia.turnos) if dia else []
@@ -275,7 +311,7 @@ def processar(entrada: Path, op: Opcoes) -> Path:
                        op.literal, op.beam)
     c_p1 = cache.ler("passo1", k_p1)
     if c_p1 is not None:
-        _etapa(4, total_etapas, "Transcrição do primeiro passo já feita (reaproveitada)")
+        _etapa(4, total_etapas, "Transcrição do primeiro passo já feita (reaproveitada)", "reaproveitada")
         segmentos = [SegmentoASR.de_dict(s) for s in c_p1["segmentos"]]
         prompt = c_p1["prompt"]
         hot1 = c_p1["hotwords"]
@@ -286,7 +322,7 @@ def processar(entrada: Path, op: Opcoes) -> Path:
         r = obter_rec(op.modelo)
         prompt = montar_prompt(r, contexto, op.literal)
         hot1 = montar_hotwords(r, op.glossario)
-        prog = Progresso("transcrição")
+        prog = relator.barra("transcrição")
         segmentos, _trechos = passo1(r, obter_audio_asr(), fala_asr, prompt, hot1, op.beam, prog)
         prog.fim()
         dispositivo_usado = f"{r.dispositivo} ({r.precisao})"
@@ -324,7 +360,7 @@ def processar(entrada: Path, op: Opcoes) -> Path:
         k_rev = Cache.chave("rev", VERSAO_REVISAO, k_p1, modelo_rev, asdict(op.opcoes_revisao), termos, contexto)
         c_rev = cache.ler("revisao", k_rev)
         if c_rev is not None:
-            _etapa(5, total_etapas, "Revisão já feita (reaproveitada)")
+            _etapa(5, total_etapas, "Revisão já feita (reaproveitada)", "reaproveitada")
             palavras = [Palavra.de_dict(p) for p in c_rev["palavras"]]
             marcadores = [Marcador.de_dict(m) for m in c_rev["marcadores"]]
             registros = c_rev["registros"]
@@ -334,7 +370,7 @@ def processar(entrada: Path, op: Opcoes) -> Path:
             _etapa(5, total_etapas, "Revisando trechos de baixa confiança e falas omitidas (segundo passo)")
             r = obter_rec(modelo_rev)
             hot2 = montar_hotwords(r, termos)
-            prog = Progresso("revisão")
+            prog = relator.barra("revisão")
             palavras, marcadores, regs, estat_rev = revisar(r, obter_audio_asr(), palavras, alvos, fala_ref, hot2,
                                                             contexto, op.opcoes_revisao, prog, fala_asr)
             prog.fim()
@@ -350,7 +386,7 @@ def processar(entrada: Path, op: Opcoes) -> Path:
                  estat_rev.get("janelas", 0), estat_rev.get("alteradas", 0),
                  estat_rev.get("palavras_recuperadas", 0), estat_rev.get("palavras_incertas", 0))
     else:
-        _etapa(5, total_etapas, "Revisão desativada")
+        _etapa(5, total_etapas, "Revisão desativada", "ignorada")
         marcadores = [Marcador(a, b, "inaudivel") for a, b in lacunas(fala_ref, palavras, op.opcoes_revisao.inaudivel_minimo)]
     if rec is not None:
         rec.liberar()
