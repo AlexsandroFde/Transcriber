@@ -217,7 +217,7 @@ def _perguntar_nomes(dados: dict) -> list[tuple[str, str]]:
 
 def _cmd_nomear(a: argparse.Namespace) -> int:
     from .processamento.exportar import FORMATOS
-    from .processamento.pipeline import carregar_transcricao, gerar_saidas
+    from .processamento.documento import carregar_transcricao, gerar_saidas
 
     caminho = Path(a.json)
     dados = carregar_transcricao(caminho)
@@ -252,7 +252,7 @@ def _cmd_nomear(a: argparse.Namespace) -> int:
 
 def _cmd_exportar(a: argparse.Namespace) -> int:
     from .processamento.exportar import FORMATOS
-    from .processamento.pipeline import carregar_transcricao, gerar_saidas
+    from .processamento.documento import carregar_transcricao, gerar_saidas
 
     caminho = Path(a.json)
     dados = carregar_transcricao(caminho)

@@ -19,13 +19,14 @@ from pathlib import Path
 
 from .. import __version__
 from ..ambiente import caminho_ffmpeg, configurar_log, descrever_gpu, token_hf
+from .documento import FORMATO_JSON, gerar_saidas
 from .intervalos import unir
 from .modelos import Marcador, Palavra, SegmentoASR, Turno
 from .montagem import (OpcoesMontagem, atribuir_falantes, falante_em, marcadores_simultaneos,
-                       montar_blocos, rotular, suavizar, texto_bloco)
+                       rotular, suavizar)
 from .qualidade import diagnosticar_segmento, termos_da_reuniao
 from .revisao import OpcoesRevisao, lacunas
-from . import exportar, relatorio, tempo
+from . import exportar, tempo
 
 log = logging.getLogger("transcritor")
 
@@ -400,7 +401,7 @@ def processar(entrada: Path, op: Opcoes) -> Path:
 
     tempos["montagem"] = time.time() - t
     dados = {
-        "formato": "transcritor/1",
+        "formato": FORMATO_JSON,
         "versao_programa": __version__,
         "gerado_em": datetime.now().strftime("%d/%m/%Y %H:%M"),
         "arquivo": {"nome": entrada.name, "caminho": str(entrada), "base": base,
@@ -440,62 +441,3 @@ def processar(entrada: Path, op: Opcoes) -> Path:
     for a in arquivos:
         log.info("    %s", a)
     return json_saida
-
-
-def carregar_transcricao(caminho: Path) -> dict:
-    dados = json.loads(Path(caminho).read_text(encoding="utf-8"))
-    if dados.get("formato") != "transcritor/1":
-        raise ValueError(f"{caminho} não é um arquivo de transcrição deste programa.")
-    return dados
-
-
-def exibicao(dados: dict) -> dict[str, str]:
-    return {f: (info.get("nome") or info["rotulo"]) for f, info in dados["falantes"].items()}
-
-
-def gerar_saidas(dados: dict, pasta: Path, formatos: list[str], json_saida: Path | None = None) -> list[Path]:
-    """Monta os blocos a partir do JSON e grava os formatos pedidos e o relatório."""
-    palavras = [Palavra.de_dict(p) for p in dados["palavras"]]
-    marcadores = [Marcador.de_dict(m) for m in dados["marcadores"]]
-    turnos = [Turno.de_dict(t) for t in (dados.get("diarizacao") or {}).get("turnos", [])]
-    exibir = exibicao(dados)
-    opm = OpcoesMontagem(**dados["processamento"].get("opcoes_montagem", {}))
-    blocos = montar_blocos(palavras, marcadores, turnos, exibir, opm)
-
-    # Participantes na ordem dos rótulos; rótulos com o mesmo nome aparecem juntos.
-    def numero(rotulo: str) -> int:
-        try:
-            return int(rotulo.rsplit(" ", 1)[-1])
-        except ValueError:
-            return 0
-
-    por_nome: dict[str, list[str]] = {}
-    for f, info in sorted(dados["falantes"].items(), key=lambda x: numero(x[1]["rotulo"])):
-        por_nome.setdefault(exibir[f], []).append(info["rotulo"])
-    participantes = [(", ".join(rots), nome) if nome not in rots else (nome, nome) for nome, rots in por_nome.items()]
-
-    base = dados["arquivo"]["base"]
-    doc = exportar.Documento(
-        titulo=dados["arquivo"]["nome"],
-        arquivo=dados["arquivo"]["nome"],
-        duracao=float(dados["arquivo"]["duracao"]),
-        gerado_em=dados["gerado_em"],
-        descricao_asr=dados["processamento"]["descricao_asr"],
-        descricao_diarizacao=dados["processamento"]["descricao_diarizacao"],
-        participantes=participantes,
-        blocos=blocos,
-        palavras=palavras,
-        marcadores=marcadores,
-        exibir=exibir,
-        observacoes=list(dados.get("observacoes", [])),
-    )
-    dados["blocos"] = [{"inicio": round(b.inicio, 2), "fim": round(b.fim, 2), "falante": b.falante,
-                        "texto": texto_bloco(b)} for b in blocos]
-    formatos = list(dict.fromkeys(formatos))
-    if "json" not in formatos:
-        formatos.append("json")  # o JSON é a fonte para renomear e reexportar
-    arquivos = exportar.salvar(doc, pasta, base, formatos, dados_json=dados)
-    rel = pasta / f"{base}_relatorio.md"
-    rel.write_text(relatorio.gerar(dados, exibir, palavras, marcadores), encoding="utf-8")
-    arquivos.append(rel)
-    return arquivos
