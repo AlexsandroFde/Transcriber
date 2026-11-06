@@ -9,11 +9,14 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import os
 import shutil
 import sys
 import warnings
 from pathlib import Path
+
+from . import config
 
 log = logging.getLogger("transcritor")
 
@@ -105,41 +108,47 @@ def caminho_ffmpeg() -> str:
 
 
 def pasta_config() -> Path:
-    base = os.environ.get("APPDATA") if sys.platform == "win32" else os.environ.get("XDG_CONFIG_HOME")
-    pasta = Path(base) if base else Path.home() / ".config"
-    return pasta / "transcritor"
+    return config.obter().pasta_config
 
 
 def pasta_modelos() -> Path:
-    if sys.platform == "win32" and os.environ.get("LOCALAPPDATA"):
-        base = Path(os.environ["LOCALAPPDATA"])
-    else:
-        base = Path.home() / ".cache"
-    return base / "transcritor" / "modelos"
+    return config.obter().pasta_modelos
 
 
 def arquivo_token() -> Path:
-    return pasta_config() / "hf_token.txt"
+    return config.obter().arquivo_token
 
 
-def token_hf(explicito: str | None = None) -> str | None:
-    """Token do Hugging Face: argumento, variável de ambiente, arquivo do transcritor ou login do hf."""
-    if explicito:
-        return explicito.strip()
-    for var in ("TRANSCRITOR_HF_TOKEN", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
-        if os.environ.get(var):
-            return os.environ[var].strip()
+VARIAVEIS_TOKEN = ("TRANSCRITOR_HF_TOKEN", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
+
+
+def localizar_token(explicito: str | None = None) -> tuple[str | None, str | None]:
+    """(token, origem). Ordem: argumento, variável de ambiente, arquivo do transcritor, login do hf.
+
+    origem: "parametro", "variavel_ambiente:<NOME>", "arquivo", "login_huggingface" ou None.
+    """
+    if explicito and explicito.strip():
+        return explicito.strip(), "parametro"
+    for var in VARIAVEIS_TOKEN:
+        if os.environ.get(var, "").strip():
+            return os.environ[var].strip(), f"variavel_ambiente:{var}"
     arq = arquivo_token()
     if arq.exists():
         conteudo = arq.read_text(encoding="utf-8").strip()
         if conteudo:
-            return conteudo
+            return conteudo, "arquivo"
     try:
         from huggingface_hub import get_token
 
-        return get_token()
+        token = get_token()
+        return (token, "login_huggingface") if token else (None, None)
     except Exception:
-        return None
+        return None, None
+
+
+def token_hf(explicito: str | None = None) -> str | None:
+    """Token do Hugging Face: argumento, variável de ambiente, arquivo do transcritor ou login do hf."""
+    return localizar_token(explicito)[0]
 
 
 def salvar_token(token: str) -> Path:
@@ -147,6 +156,15 @@ def salvar_token(token: str) -> Path:
     arq.parent.mkdir(parents=True, exist_ok=True)
     arq.write_text(token.strip() + "\n", encoding="utf-8")
     return arq
+
+
+def remover_token() -> bool:
+    """Apaga o token salvo pelo transcritor. Retorna False se não havia arquivo."""
+    arq = arquivo_token()
+    if not arq.exists():
+        return False
+    arq.unlink()
+    return True
 
 
 def configurar_log(arquivo: Path | None = None, detalhado: bool = False) -> None:
@@ -172,3 +190,42 @@ def configurar_log(arquivo: Path | None = None, detalhado: bool = False) -> None
         fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         fh._transcritor_arquivo = True  # type: ignore[attr-defined]
         raiz.addHandler(fh)
+
+
+FORMATO_LOG_APLICATIVO = "%(asctime)s %(levelname)-7s [%(threadName)s] %(name)s: %(message)s"
+
+
+def configurar_log_aplicativo(cfg: config.Configuracoes, console: bool = True) -> Path:
+    """Registro do servidor e do inicializador: arquivo rotativo e, se houver, o console.
+
+    Usa a raiz do `logging` (as mensagens do processamento, no logger "transcritor", só são
+    configuradas nos processos trabalhadores, que têm registro próprio por tarefa).
+    """
+    cfg.pasta_logs.mkdir(parents=True, exist_ok=True)
+    arquivo = cfg.pasta_logs / "transcritor.log"
+    raiz = logging.getLogger()
+    raiz.setLevel(getattr(logging, cfg.nivel_log, logging.INFO))
+    for h in list(raiz.handlers):
+        if getattr(h, "_transcritor_app", False):
+            raiz.removeHandler(h)
+            h.close()
+    fh = logging.handlers.RotatingFileHandler(arquivo, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    fh.setFormatter(logging.Formatter(FORMATO_LOG_APLICATIVO))
+    fh._transcritor_app = True  # type: ignore[attr-defined]
+    raiz.addHandler(fh)
+    if console and sys.stderr is not None:
+        sh = logging.StreamHandler(sys.stderr)
+        sh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%H:%M:%S"))
+        sh._transcritor_app = True  # type: ignore[attr-defined]
+        raiz.addHandler(sh)
+    # Neste processo, o logger "transcritor" apenas repassa à raiz (sem console próprio).
+    proc = logging.getLogger("transcritor")
+    for h in list(proc.handlers):
+        if getattr(h, "_transcritor_console", False) or getattr(h, "_transcritor_arquivo", False):
+            proc.removeHandler(h)
+    proc.setLevel(logging.NOTSET)
+    proc.propagate = True
+    for nome in ("uvicorn", "uvicorn.error"):
+        logging.getLogger(nome).setLevel(logging.INFO)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    return arquivo
