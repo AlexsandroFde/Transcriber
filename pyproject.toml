@@ -1,7 +1,7 @@
 [project]
 name = "transcritor"
-version = "1.0.0"
-description = "Transcrição fiel de reuniões gravadas em vídeo (português brasileiro), com identificação de participantes, marcação temporal e exportação em MD, TXT, DOCX, SRT, VTT e JSON."
+version = "2.0.0"
+description = "Aplicativo de transcrição fiel de reuniões gravadas (português brasileiro), com identificação de participantes, marcação temporal, exportação em MD, TXT, DOCX, SRT, VTT e JSON, e API REST documentada."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
